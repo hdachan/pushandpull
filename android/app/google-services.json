@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "776045009137",
+    "project_id": "pushandpull-5a6f3",
+    "storage_bucket": "pushandpull-5a6f3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:776045009137:android:bfceab18c2fe9685f83150",
+        "android_client_info": {
+          "package_name": "com.example.pushpull"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC7WlJ2B6GYa9wUscaPyTXS5OUw8PYyvRw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

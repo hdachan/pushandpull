@@ -14,8 +14,9 @@ class _RoutinePageState extends State<RoutinePage> {
   bool loading = true;
   Map<String, dynamic> routine = {};
   List<Map<String, dynamic>> exercises = [];
-  Map<String, List<Map<String, String>>> localSets = {};
-  Map<String, List<Map<String, dynamic>>> history = {}; // 운동별 기록 캐시
+
+  Map<String, List<Map<String, TextEditingController>>> todaySets = {};
+  Map<String, List<Map<String, dynamic>>> latestSession = {};
 
   @override
   void initState() {
@@ -25,168 +26,168 @@ class _RoutinePageState extends State<RoutinePage> {
 
   Future<void> fetchRoutine() async {
     try {
-      // 루틴 정보 불러오기
       final r = await supabase
           .from('routines')
-          .select('id, name')
+          .select('name')
           .eq('id', widget.routineId)
           .single();
       routine = r;
 
-      // 루틴에 포함된 운동 불러오기
       final data = await supabase
           .from('routine_exercises')
-          .select('exercise_id, exercises(id, name, last_weight, last_reps)')
+          .select('exercise_id, exercises(id, name)')
           .eq('routine_id', widget.routineId)
           .order('sort_order');
 
-      exercises = List<Map<String, dynamic>>.from(
-        data.map((row) => row['exercises'] as Map<String, dynamic>),
-      );
+      exercises = List.from(data.map((e) => e['exercises']));
 
-      // 각 운동별 로컬 상태 + 히스토리 불러오기
       for (var ex in exercises) {
         final exId = ex['id'] as String;
-        localSets[exId] = [{'weight': '', 'reps': ''}];
-        await fetchHistory(exId);
+        todaySets[exId] = [
+          {
+            'weight': TextEditingController(),
+            'reps': TextEditingController(),
+          }
+        ];
+        await fetchLatestSession(exId);
+        await preloadFirstSet(exId);
       }
 
       setState(() => loading = false);
     } catch (e) {
-      debugPrint('Error fetching routine: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('데이터 로드 실패: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('로드 실패: $e'), backgroundColor: Colors.red),
+        );
       }
     }
   }
 
-  Future<void> fetchHistory(String exId) async {
-    final data = await supabase
+  // 가장 최근 세션
+  Future<void> fetchLatestSession(String exId) async {
+    final result = await supabase
         .from('exercise_history')
         .select()
         .eq('exercise_id', exId)
+        .order('session_date', ascending: false)
         .order('date', ascending: false);
 
-    setState(() {
-      history[exId] = List<Map<String, dynamic>>.from(data);
-    });
+    if (result.isNotEmpty) {
+      final latestDate = result.first['session_date'];
+      final session = result
+          .where((log) => log['session_date'] == latestDate)
+          .toList();
+      latestSession[exId] = session;
+    } else {
+      latestSession[exId] = [];
+    }
   }
 
-  void updateLocal(String exId, String field, String val) {
-    final filtered = val.replaceAll(RegExp(r'[^0-9]'), '');
-    setState(() {
-      localSets[exId]![0][field] = filtered;
-    });
+  // 첫 세트 자동 입력
+  Future<void> preloadFirstSet(String exId) async {
+    final first = await supabase
+        .from('exercise_history')
+        .select('weight')
+        .eq('exercise_id', exId)
+        .order('session_date', ascending: false)
+        .order('date')
+        .limit(1);
+
+    if (first.isNotEmpty && first[0]['weight'] != null) {
+      todaySets[exId]![0]['weight']!.text = first[0]['weight'].toString();
+    }
   }
 
-  Future<void> handleSave() async {
-    setState(() => loading = true);
-    final now = DateTime.now().toIso8601String();
-
-    for (var ex in exercises) {
-      final exId = ex['id'] as String;
-      final set = localSets[exId]!.first;
-      final weightStr = set['weight']!;
-      final repsStr = set['reps']!;
-
-      if (weightStr.isEmpty || repsStr.isEmpty) continue;
-
-      final weight = int.parse(weightStr);
-      final reps = int.parse(repsStr);
-
-      // 🔹 1) history 테이블에 새 기록 추가
-      await supabase.from('exercise_history').insert({
-        'exercise_id': exId,
-        'weight': weight,
-        'reps': reps,
-        'date': now,
+  void addSet(String exId) {
+    setState(() {
+      todaySets[exId]!.add({
+        'weight': TextEditingController(),
+        'reps': TextEditingController(),
       });
+    });
+  }
 
-      // 🔹 2) exercises 테이블 최신값 갱신
-      await supabase.from('exercises').update({
-        'last_weight': weight,
-        'last_reps': reps,
-      }).eq('id', exId);
+  void removeTodaySet(String exId, int index) {
+    setState(() {
+      todaySets[exId]![index]['weight']!.dispose();
+      todaySets[exId]![index]['reps']!.dispose();
+      todaySets[exId]!.removeAt(index);
+    });
+  }
 
-      await fetchHistory(exId);
-      localSets[exId] = [{'weight': '', 'reps': ''}];
-    }
-
-    setState(() => loading = false);
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('저장 완료!')));
+  Future<void> deleteHistoryRecord(String historyId, String exId) async {
+    try {
+      await supabase.from('exercise_history').delete().eq('id', historyId);
+      await fetchLatestSession(exId);
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('기록 삭제됨'), backgroundColor: Colors.orange),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('삭제 실패: $e'), backgroundColor: Colors.red),
+      );
     }
   }
 
-  Future<void> deleteLog(String exId, String logId) async {
-    await supabase.from('exercise_history').delete().eq('id', logId);
-    await fetchHistory(exId);
+  Future<void> saveToday() async {
+    if (loading) return;
+    setState(() => loading = true);
 
-    // 최근 기록이 없으면 exercises 최신값 초기화
-    final latest =
-    history[exId]?.isNotEmpty == true ? history[exId]!.first : null;
-    await supabase.from('exercises').update({
-      'last_weight': latest?['weight'],
-      'last_reps': latest?['reps'],
-    }).eq('id', exId);
-  }
+    final now = DateTime.now();
+    final sessionDateStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
 
-  Future<void> editLog(String exId, Map<String, dynamic> log) async {
-    final weightController =
-    TextEditingController(text: log['weight'].toString());
-    final repsController = TextEditingController(text: log['reps'].toString());
+    try {
+      for (var ex in exercises) {
+        final exId = ex['id'] as String;
+        final sets = todaySets[exId]!;
 
-    await showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('기록 수정'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: weightController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '무게 (kg)'),
-              ),
-              TextField(
-                controller: repsController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '횟수'),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('취소'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final weight = int.tryParse(weightController.text) ?? 0;
-                final reps = int.tryParse(repsController.text) ?? 0;
+        for (var s in sets) {
+          final w = s['weight']!.text.trim();
+          final r = s['reps']!.text.trim();
+          if (w.isEmpty || r.isEmpty) continue;
 
-                await supabase.from('exercise_history').update({
-                  'weight': weight,
-                  'reps': reps,
-                }).eq('id', log['id']);
+          await supabase.from('exercise_history').insert({
+            'exercise_id': exId,
+            'weight': int.parse(w),
+            'reps': int.parse(r),
+            'date': now.toIso8601String(),
+            'session_date': sessionDateStr,
+          });
+        }
 
-                await fetchHistory(exId);
-                if (mounted) Navigator.pop(context);
-              },
-              child: const Text('저장'),
-            ),
-          ],
+        if (sets[0]['weight']!.text.isNotEmpty) {
+          await supabase.from('exercises').update({
+            'last_weight': int.parse(sets[0]['weight']!.text),
+            'last_reps': int.parse(sets[0]['reps']!.text),
+          }).eq('id', exId);
+        }
+
+        for (var s in sets) {
+          s['weight']!.clear();
+          s['reps']!.clear();
+        }
+        todaySets[exId] = [todaySets[exId]![0]];
+      }
+
+      for (var ex in exercises) {
+        await fetchLatestSession(ex['id']);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('저장 완료!'), backgroundColor: Colors.green),
         );
-      },
-    );
-  }
-
-  String _formatDate(String iso) {
-    final date = DateTime.parse(iso).toLocal();
-    return '${date.month}/${date.day} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('저장 실패: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      setState(() => loading = false);
+    }
   }
 
   @override
@@ -195,111 +196,143 @@ class _RoutinePageState extends State<RoutinePage> {
       appBar: AppBar(title: Text(routine['name'] ?? '루틴')),
       body: loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
+          : ListView.builder(
         padding: const EdgeInsets.all(12),
-        children: [
-          for (var ex in exercises)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(ex['name'],
-                            style: const TextStyle(
-                                fontWeight: FontWeight.bold)),
-                        Text(
-                          '최근: ${ex['last_weight'] ?? '-'}kg / ${ex['last_reps'] ?? '-'}회',
-                          style: TextStyle(color: Colors.grey[600]),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Row(children: [
+        itemCount: exercises.length,
+        itemBuilder: (ctx, i) {
+          final ex = exercises[i];
+          final exId = ex['id'] as String;
+          final exName = ex['name'] as String;
+          final latest = latestSession[exId] ?? [];
+          final sets = todaySets[exId]!;
+
+          return Card(
+            margin: const EdgeInsets.symmetric(vertical: 8),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 운동 이름
+                  Text(
+                    exName,
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 12),
+
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 왼쪽: 최근 기록 (스와이프 삭제)
                       Expanded(
-                        child: TextField(
-                          keyboardType: TextInputType.number,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("최근 기록",
+                                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
+                            const SizedBox(height: 8),
+                            if (latest.isEmpty)
+                              const Text("기록 없음", style: TextStyle(color: Colors.grey))
+                            else
+                              ...latest.asMap().entries.map((entry) {
+                                final log = entry.value;
+                                return Dismissible(
+                                  key: Key(log['id'].toString()),
+                                  direction: DismissDirection.endToStart,
+                                  background: Container(
+                                    color: Colors.red,
+                                    alignment: Alignment.centerRight,
+                                    padding: const EdgeInsets.only(right: 20),
+                                    child: const Icon(Icons.delete, color: Colors.white),
+                                  ),
+                                  onDismissed: (_) => deleteHistoryRecord(log['id'].toString(), exId),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 2),
+                                    child: Text("${log['weight']}kg × ${log['reps']}회"),
+                                  ),
+                                );
+                              }),
                           ],
-                          decoration:
-                          const InputDecoration(hintText: '무게'),
-                          onChanged: (v) =>
-                              updateLocal(ex['id'], 'weight', v),
                         ),
                       ),
-                      const SizedBox(width: 8),
+
+                      // 오른쪽: 오늘 입력 (X 버튼 삭제)
                       Expanded(
-                        child: TextField(
-                          keyboardType: TextInputType.number,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("오늘 입력",
+                                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                            const SizedBox(height: 8),
+                            ...sets.asMap().entries.map((entry) {
+                              final idx = entry.key;
+                              final s = entry.value;
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 4),
+                                child: Row(
+                                  children: [
+                                    Text("${idx + 1}세트: "),
+                                    Expanded(
+                                      child: TextField(
+                                        controller: s['weight'],
+                                        keyboardType: TextInputType.number,
+                                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                                        decoration: const InputDecoration(hintText: "무게"),
+                                      ),
+                                    ),
+                                    const Text(" × "),
+                                    Expanded(
+                                      child: TextField(
+                                        controller: s['reps'],
+                                        keyboardType: TextInputType.number,
+                                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                                        decoration: const InputDecoration(hintText: "횟수"),
+                                      ),
+                                    ),
+                                    if (idx > 0)
+                                      IconButton(
+                                        icon: const Icon(Icons.close, size: 18),
+                                        onPressed: () => removeTodaySet(exId, idx),
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                      ),
+                                  ],
+                                ),
+                              );
+                            }),
+                            TextButton.icon(
+                              onPressed: () => addSet(exId),
+                              icon: const Icon(Icons.add, size: 16),
+                              label: const Text("세트 추가"),
+                            ),
                           ],
-                          decoration:
-                          const InputDecoration(hintText: '횟수'),
-                          onChanged: (v) =>
-                              updateLocal(ex['id'], 'reps', v),
                         ),
                       ),
-                    ]),
-                    const SizedBox(height: 12),
-                    if (history[ex['id']]?.isNotEmpty == true) ...[
-                      const Text('기록 이력',
-                          style: TextStyle(fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 4),
-                      for (var log in history[ex['id']]!)
-                        Padding(
-                          padding:
-                          const EdgeInsets.symmetric(vertical: 2),
-                          child: Row(
-                            mainAxisAlignment:
-                            MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text('${log['weight']}kg × ${log['reps']}회'),
-                              Text(
-                                _formatDate(log['date']),
-                                style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey[600]),
-                              ),
-                              Row(
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.edit,
-                                        size: 16, color: Colors.blue),
-                                    onPressed: () =>
-                                        editLog(ex['id'], log),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete,
-                                        size: 16, color: Colors.red),
-                                    onPressed: () =>
-                                        deleteLog(ex['id'], log['id']),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
                     ],
-                    const Divider(),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
-          const SizedBox(height: 20),
-          ElevatedButton(
-            onPressed: handleSave,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-            ),
-            child: const Text('기록 저장'),
-          ),
-        ],
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: loading ? null : saveToday,
+        label: const Text("기록 저장"),
+        icon: const Icon(Icons.save),
+        backgroundColor: Colors.green,
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    for (var sets in todaySets.values) {
+      for (var s in sets) {
+        s['weight']!.dispose();
+        s['reps']!.dispose();
+      }
+    }
+    super.dispose();
   }
 }

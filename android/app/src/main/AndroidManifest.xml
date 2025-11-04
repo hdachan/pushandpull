@@ -20,13 +20,22 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
 
-            <!-- 여기에 추가: Supabase OAuth 콜백용 Deep Link -->
+            <!-- 기존 pushpull scheme Deep Link -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <!-- 아래 scheme은 코드에서 사용한 redirectTo와 일치해야 함 -->
-                <data android:scheme="pushpull" /> <!-- 앱 이름 기반 스킴 추천 -->
+                <data android:scheme="pushpull" />
+            </intent-filter>
+
+            <!-- ✅ Supabase OAuth 콜백용 Deep Link 추가 -->
+            <intent-filter android:label="flutter_supabase">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="io.supabase.flutter"
+                    android:host="login-callback" />
             </intent-filter>
 
             <meta-data
