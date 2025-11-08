@@ -1,8 +1,11 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id "com.android.application"
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
-    id "com.google.gms.google-services" // ✅ 반드시 여기에 있어야 함
+    id "com.google.gms.google-services"
 }
 
 android {
@@ -16,6 +19,23 @@ android {
         targetSdkVersion flutter.targetSdkVersion
         versionCode flutter.versionCode
         versionName flutter.versionName
+    }
+
+    signingConfigs {
+        release {
+            keyAlias 'key'
+            keyPassword 'dc0915'
+            storeFile file('C:/Users/ghkde/AndroidStudioProjects/pushpull/key.jks')
+            storePassword 'dc0915'
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            shrinkResources false
+        }
     }
 
     compileOptions {

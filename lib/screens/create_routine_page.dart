@@ -1,49 +1,64 @@
-// 루틴 생성 화면 – 이름 입력 + 운동 여러 개 추가 → DB 저장 후 돌아감.
+// lib/screens/create_routine_page.dart
 import 'package:flutter/material.dart';
 import '../services/supabase_client.dart';
+import 'exercise_selector_page.dart';
 
 class CreateRoutinePage extends StatefulWidget {
   final VoidCallback? onSaved;
   const CreateRoutinePage({this.onSaved, super.key});
-
   @override
   State<CreateRoutinePage> createState() => _CreateRoutinePageState();
 }
 
 class _CreateRoutinePageState extends State<CreateRoutinePage> {
   final _nameCtl = TextEditingController();
-  final List<TextEditingController> _exerciseCtls = [TextEditingController()];
+  final List<String> _selectedExerciseIds = [];
+  String _type = 'main';          // 추가
   bool saving = false;
   final user = supabase.auth.currentUser;
 
-  void addExerciseField() => setState(() => _exerciseCtls.add(TextEditingController()));
-  void removeExerciseField(int i) => setState(() => _exerciseCtls.removeAt(i));
+  void pickExercises() async {
+    final chosen = await Navigator.push<List<String>>(
+      context,
+      MaterialPageRoute(builder: (_) => const ExerciseSelectorPage()),
+    );
+    if (chosen != null) setState(() => _selectedExerciseIds.addAll(chosen));
+  }
 
   Future<void> handleSave() async {
     final name = _nameCtl.text.trim();
-    final exercises = _exerciseCtls.map((c) => c.text.trim()).where((s) => s.isNotEmpty).toList();
-    if (name.isEmpty || exercises.isEmpty) return;
+    if (name.isEmpty || _selectedExerciseIds.isEmpty) return;
     setState(() => saving = true);
 
-    final routine = await supabase.from('routines').insert({'user_id': user!.id, 'name': name}).select('id').single();
-    final routineId = routine['id'] as String;
+    try {
+      final routine = await supabase
+          .from('routines')
+          .insert({'user_id': user!.id, 'name': name, 'type': _type})
+          .select('id')
+          .single();
+      final routineId = routine['id'] as String;
 
-    for (var i = 0; i < exercises.length; i++) {
-      final exName = exercises[i];
-      final existing = await supabase.from('exercises').select('id').eq('user_id', user!.id).eq('name', exName).limit(1);
-      String exId;
-      if (existing.isNotEmpty) {
-        exId = existing[0]['id'];
-      } else {
-        final ins = await supabase.from('exercises').insert({'user_id': user!.id, 'name': exName}).select('id').single();
-        exId = ins['id'];
-      }
-      await supabase.from('routine_exercises').insert({'routine_id': routineId, 'exercise_id': exId, 'sort_order': i});
+      final inserts = _selectedExerciseIds
+          .asMap()
+          .entries
+          .map((e) => {
+        'routine_id': routineId,
+        'exercise_id': e.value,
+        'sort_order': e.key * 10,
+        'type': _type
+      })
+          .toList();
+
+      await supabase.from('routine_exercises').insert(inserts);
+
+      widget.onSaved?.call();
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('저장 실패: $e'), backgroundColor: Colors.red));
+    } finally {
+      setState(() => saving = false);
     }
-
-    setState(() => saving = false);
-    widget.onSaved?.call();
-    if (mounted) Navigator.pop(context);
   }
 
   @override
@@ -54,16 +69,45 @@ class _CreateRoutinePageState extends State<CreateRoutinePage> {
         padding: const EdgeInsets.all(12),
         child: Column(children: [
           TextField(controller: _nameCtl, decoration: const InputDecoration(labelText: '루틴 이름')),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            value: _type,
+            decoration: const InputDecoration(labelText: '루틴 타입'),
+            items: const [
+              DropdownMenuItem(value: 'main', child: Text('Main')),
+              DropdownMenuItem(value: 'side', child: Text('Side')),
+            ],
+            onChanged: (v) => setState(() => _type = v!),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+              onPressed: pickExercises,
+              icon: const Icon(Icons.fitness_center),
+              label: Text('운동 선택 (${_selectedExerciseIds.length})')),
+          const SizedBox(height: 12),
           Expanded(
-            child: ListView.builder(
-              itemCount: _exerciseCtls.length,
-              itemBuilder: (context, i) => Row(children: [
-                Expanded(child: TextField(controller: _exerciseCtls[i], decoration: InputDecoration(labelText: '운동 ${i + 1}'))),
-                IconButton(onPressed: () => removeExerciseField(i), icon: const Icon(Icons.delete)),
-              ]),
+            child: FutureBuilder<List<Map<String, dynamic>>>(
+              future: Future.wait(_selectedExerciseIds.map((id) async {
+                return await supabase.from('exercises').select('id, name').eq('id', id).single();
+              })),
+              builder: (c, snap) {
+                if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+                final list = snap.data!;
+                return ListView.builder(
+                  itemCount: list.length,
+                  itemBuilder: (_, i) {
+                    final ex = list[i];
+                    return ListTile(
+                      title: Text(ex['name']),
+                      trailing: IconButton(
+                          icon: const Icon(Icons.remove_circle, color: Colors.red),
+                          onPressed: () => setState(() => _selectedExerciseIds.remove(ex['id']))),
+                    );
+                  },
+                );
+              },
             ),
           ),
-          ElevatedButton(onPressed: addExerciseField, child: const Text('+ 운동 추가')),
           ElevatedButton(onPressed: saving ? null : handleSave, child: const Text('저장')),
         ]),
       ),
